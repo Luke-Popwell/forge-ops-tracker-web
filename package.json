@@ -1,0 +1,65 @@
+{
+  "name": "@forge-ops/tracker-web",
+  "version": "0.15.0",
+  "description": "ForgeOps error tracking client for browser/frontend apps: captures unhandled exceptions (window.onerror, unhandledrejection, a React error boundary, and a Next.js instrumentation hook), plus explicit capture anywhere else, and delivers them to ForgeOps over HTTP.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./integrations/react": {
+      "types": "./dist/integrations/react.d.ts",
+      "default": "./dist/integrations/react.js"
+    },
+    "./integrations/nextjs": {
+      "types": "./dist/integrations/nextjs.d.ts",
+      "default": "./dist/integrations/nextjs.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "author": "ForgeOps",
+  "homepage": "https://getforgeops.net",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Luke-Popwell/forge-ops-tracker-web.git"
+  },
+  "files": [
+    "dist",
+    "LICENSE.txt"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "lint": "eslint src test"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^10.0.0",
+    "jsdom": "^25.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^2.1.0"
+  }
+}
