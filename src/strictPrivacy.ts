@@ -8,7 +8,7 @@
  * sdks/strict_privacy_vectors.json pins the results both have to agree on.
  *
  * Errors still group without their message: message_fingerprint is a one-way hash of the message
- * with its numbers and ids taken out, computed here, in the page. Synchronously, so reporting an
+ * with its numbers, ids, emails and quoted values taken out, computed here, in the page. Synchronously, so reporting an
  * error never waits on crypto.subtle's promise: the SHA-256 below is self-contained for that
  * reason, rather than a dependency.
  */
@@ -18,7 +18,13 @@ export const FINGERPRINT_LENGTH = 32;
 // No lookbehind (older Safari can't even parse a regex that has one): a match's neighbours are
 // checked by hand instead, against ASCII word characters only, the same in every SDK and on the
 // server. Rejecting a match and moving past it gives the same result as a lookbehind would here,
-// since no valid match can start inside a rejected one.
+// since no valid match can start inside a rejected one. Single quotes are the exception (a rejected
+// 'a ' can hide a valid 'b' that starts at its closing quote), so they're scanned one opener at a time.
+const EMAIL = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+// A quoted value (KeyError: 'Jane Doe') is data, not the shape of the error. Single quotes only open
+// and close at a word boundary, so a contraction (Couldn't) or the `email' style never starts one.
+const DOUBLE_QUOTED = /"[^"\r\n]*"/g;
+const SINGLE_QUOTED = /'[^'\r\n]*'/g;
 const HEX_OBJECT_ID = /0x[0-9a-fA-F]{4,}/g;
 const UUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
 const NUMBER = /[0-9]+/g;
@@ -43,9 +49,35 @@ function replaceStandalone(text: string, pattern: RegExp, replacement: string): 
   });
 }
 
-/** The message with hex object ids, UUIDs and standalone numbers replaced, in that order. */
+// Every standalone single-quoted run: a rejected candidate moves the search on by one character, not
+// past the candidate, which is exactly what a lookbehind and lookahead would do.
+function replaceSingleQuoted(text: string): string {
+  const pattern = new RegExp(SINGLE_QUOTED.source, "g");
+  let result = "";
+  let copied = 0;
+  let found: RegExpExecArray | null;
+  while ((found = pattern.exec(text)) !== null) {
+    const start = found.index;
+    const end = start + found[0].length;
+    const before = text.charAt(start - 1);
+    const after = text.charAt(end);
+    if ((before !== "" && WORD_CHAR.test(before)) || (after !== "" && WORD_CHAR.test(after))) {
+      pattern.lastIndex = start + 1;
+      continue;
+    }
+    result += text.slice(copied, start) + "<str>";
+    copied = end;
+  }
+  return result + text.slice(copied);
+}
+
+/**
+ * The message with emails, quoted values, hex object ids, UUIDs and standalone numbers replaced, in
+ * that order.
+ */
 export function normalizeMessage(message: unknown): string {
-  const withoutHex = String(message ?? "").replace(HEX_OBJECT_ID, "0x");
+  const quoted = String(message ?? "").replace(EMAIL, "<email>").replace(DOUBLE_QUOTED, "<str>");
+  const withoutHex = replaceSingleQuoted(quoted).replace(HEX_OBJECT_ID, "0x");
   return replaceStandalone(replaceStandalone(withoutHex, UUID, "<uuid>"), NUMBER, "<n>");
 }
 

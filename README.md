@@ -163,7 +163,7 @@ forgeOpsTracker.init({
 ```
 
 - An error event goes out without its message. It carries a `message_fingerprint` instead: a
-  one-way hash of the message with its numbers and ids taken out, computed in the page, so errors
+  one-way hash of the message with its numbers, ids, emails and quoted values taken out, computed in the page, so errors
   still group the same way.
 - No breadcrumbs (none are recorded, automatic or `addBreadcrumb()`), no SQL statement (even with
   `captureSqlStatement` on; the table and procedure names are still sent), and no `replay_id`.
