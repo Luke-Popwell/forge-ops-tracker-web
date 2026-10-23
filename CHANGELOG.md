@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.17.0 (2026-10-23)
+
+- PII scrubbing catches card numbers however they're grouped (bare, 4-4-4-4, Amex's 4-6-5, or next to a
+  security code) when the digits have a card network's prefix and pass the Luhn check, so long ids stay
+  readable; IBANs, compact or in groups of four, by their own check digits; and fields named `iban`,
+  `account_number`, `routing_number` or `bank_account`. The rules are in sdks/PII_SCRUBBING.md, the same in
+  every SDK.
+- Session replay masks more by default. Text-bearing attributes (`placeholder`, `title`, `alt`,
+  `label`, `aria-label`, `aria-description`, `aria-placeholder`, `aria-valuetext`, the `value`
+  attribute of buttons, checkboxes, radios and options, a `<meta>` tag's `content`, and every
+  `data-*` attribute except `data-forgeops-*`) are masked the way text is; before, they were
+  recorded as they were. Checkbox and radio state is recorded as unchecked and a `<select>`'s
+  chosen option as `••••••••`; before, both were recorded. `data-forgeops-unmask="true"` still
+  shows all of these, on the element and everything inside it.
+- Session replay keeps only the scheme, host, port and path of every address it records: the
+  page's address sent with the recording, and every `href`, `src`, `srcset`, `action`,
+  `formaction`, `poster` and `cite`. The query string, fragment and any `user:password@` are
+  dropped, unmasked or not; before, the full address was recorded. A `mailto:`, `tel:`, `sms:` or
+  `javascript:` address keeps only its scheme.
+- The README's Session Replay section lists exactly what is and isn't recorded, including what
+  `data-forgeops-unmask` reveals inside it.
+
 ## 0.16.0 (2026-10-22)
 
 - Strict privacy: the message fingerprint now also replaces email addresses with `<email>` and quoted

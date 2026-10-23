@@ -1,5 +1,28 @@
+/// <reference types="vite/client" />
 import { describe, expect, it } from "vitest";
-import { scrub, scrubString } from "../src/piiScrubber.js";
+import { REDACTED, scrub, scrubString } from "../src/piiScrubber.js";
+// A byte-identical copy of sdks/pii_scrubbing_vectors.json, generated from the server's own
+// app/services/pii_scrubber.rb: card numbers, IBANs and bank-detail keys, as sdks/PII_SCRUBBING.md
+// describes them.
+import vectorsJson from "./fixtures/pii_scrubbing_vectors.json?raw";
+
+interface Vectors {
+  strings: { input: string; scrubbed: string }[];
+  keys: { key: string; redacted: boolean }[];
+}
+
+const vectors = JSON.parse(vectorsJson) as Vectors;
+
+describe("piiScrubber vectors", () => {
+  it.each(vectors.strings)("scrubs $input exactly as the server does", ({ input, scrubbed }) => {
+    expect(scrub(input)).toBe(scrubbed);
+  });
+
+  it.each(vectors.keys)("redacts a value under $key exactly when the server does", ({ key, redacted }) => {
+    const scrubbed = scrub({ [key]: "x" }) as { [key: string]: unknown };
+    expect(scrubbed[key] === REDACTED).toBe(redacted);
+  });
+});
 
 describe("piiScrubber", () => {
   it("redacts an email address embedded in free text", () => {

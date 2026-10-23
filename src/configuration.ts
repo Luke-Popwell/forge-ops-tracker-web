@@ -110,12 +110,14 @@ export class Configuration {
    * memory and is only ever uploaded when an error actually happens (see Reporter#report); a
    * session that never errors never uploads anything.
    *
-   * Every text node and every form input's value is masked before it's ever recorded, always,
-   * there's no flag here to turn that off globally, matching this app's own PII-scrubbing
-   * philosophy of redacting by default. An element that's genuinely safe to show as-is (a static
-   * marketing header, say) can opt out one element at a time with
-   * data-forgeops-unmask="true", deliberately per-element and explicit, never a blanket switch
-   * a project could flip without thinking about what it's exposing.
+   * Every text node, every form input's value, checkbox/radio state and chosen <select> option,
+   * and every text-bearing attribute (placeholder, title, alt, aria-label, data-* and the like)
+   * is masked before it's ever recorded, always, there's no flag here to turn that off globally,
+   * matching this app's own PII-scrubbing philosophy of redacting by default. An element that's
+   * genuinely safe to show as-is (a static marketing header, say) can opt out one element at a
+   * time with data-forgeops-unmask="true", deliberately per-element and explicit, never a blanket
+   * switch a project could flip without thinking about what it's exposing. Every address recorded
+   * (the page's, and every href/src) keeps only its scheme, host, port and path, unmasked or not.
    */
   sessionReplay = false;
 

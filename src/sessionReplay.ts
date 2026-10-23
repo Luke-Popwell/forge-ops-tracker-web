@@ -2,13 +2,14 @@ import { Client } from "./client.js";
 import { Configuration } from "./configuration.js";
 
 // What actually gets masked, always, no configuration to turn any of this off (see
-// Configuration#sessionReplay's own comment for why): every text node's content, and an input/
-// textarea's own typed value. Not masked, and a real, deliberate v1 scope limitation rather than
-// an oversight: placeholder/alt/title/aria-label attributes, which can occasionally carry
-// something sensitive a project set by hand (a placeholder of "e.g. jane@example.com" is fine;
-// one hardcoding a real customer's own address wouldn't be). A project with that concern should
-// avoid putting a real value in one of those attributes for now, the same care it would already
-// need to take with anything else meant to be genuinely private.
+// Configuration#sessionReplay's own comment for why): every text node's content, an input/
+// textarea's own typed value, the text-bearing attributes TEXT_ATTRIBUTES and isTextAttribute
+// name (placeholder, title, alt, aria-label and the like, every data-* attribute but this SDK's
+// own data-forgeops-* ones, any other value attribute, and a <meta> tag's content), a checkbox/
+// radio's checked state, and a <select>'s chosen option. data-forgeops-unmask="true" on an
+// element or an ancestor of it shows all of these as they are. Every address the recording
+// carries, the page's own included, keeps only its scheme, host, port and path, whether
+// unmasked or not (see addressWithoutQuery).
 export interface SessionReplayPayload {
   replay_id: string;
   started_at: string;
@@ -71,10 +72,7 @@ const SCROLL_THROTTLE_MS = 200;
 // watching a replay would actually notice.
 const MOUSEMOVE_THROTTLE_MS = 100;
 
-// Attributes that are themselves script/style content, or a resource reference no different from
-// any other attribute a real page might legitimately want to see reconstructed (src/href); not
-// masked, since masking them would make an image or a link impossible to tell apart from any
-// other, without actually protecting anything a URL wasn't already going to reveal on its own.
+// Elements whose own content is script or style, never something a replay needs to show.
 const SKIPPED_TAGS = new Set([ "SCRIPT", "STYLE", "NOSCRIPT" ]);
 
 let installed = false;
@@ -213,7 +211,7 @@ async function uploadRecording(
       replay_id: replayId,
       started_at: new Date(startedAt).toISOString(),
       duration_ms: Math.max(durationMs, 1),
-      page_url: window.location.href,
+      page_url: addressWithoutQuery(window.location.href),
       recording: encoded,
     });
     if (status === "rejected") {
@@ -408,7 +406,12 @@ function serializeNode(node: Node): SerializedNode | null {
 
   const attrs: Record<string, string> = {};
   for (const attr of Array.from(element.attributes)) {
-    attrs[attr.name] = attributeValueFor(element, attr.name) ?? "";
+    // null: an attribute that is itself the data being masked (a checkbox's checked, an
+    // option's selected), left out the way an unchecked box or an unchosen option has none.
+    const value = attributeValueFor(element, attr.name);
+    if (value !== null) {
+      attrs[attr.name] = value;
+    }
   }
   // A form field's *live* value (what's actually on screen right now) is a plain IDL property;
   // typing, checking a checkbox, or picking a <select> option changes only that property, never
@@ -438,24 +441,116 @@ function serializeNode(node: Node): SerializedNode | null {
   return { id: nodeId(element), type: "element", tag: element.tagName.toLowerCase(), attrs, children };
 }
 
-// The one place both the initial snapshot and a later "value" attribute mutation both go through,
-// so an input masked at snapshot time is masked exactly the same way if it changes afterward.
-// Reads the live value property, not just the attribute HTML itself carried at parse time: an
-// attribute reflects a field's default value, not whatever's actually been typed into it since,
-// and it's the latter this needs to hide.
+// Attributes whose value is text a person reads (or a screen reader speaks), masked the same way
+// a text node is. See isTextAttribute for the ones matched by pattern rather than by name.
+const TEXT_ATTRIBUTES = new Set([
+  "placeholder", "title", "alt", "label", "aria-label", "aria-description", "aria-placeholder", "aria-valuetext",
+]);
+
+// Attributes holding one address, recorded by addressWithoutQuery, and ones holding a list of
+// them (an image's candidates), recorded by srcsetWithoutQueries.
+const URL_ATTRIBUTES = new Set([ "href", "src", "xlink:href", "action", "formaction", "poster", "cite", "data", "background" ]);
+const SRCSET_ATTRIBUTES = new Set([ "srcset", "imagesrcset" ]);
+
+function isTextAttribute(element: Element, name: string): boolean {
+  if (TEXT_ATTRIBUTES.has(name)) {
+    return true;
+  }
+  // A data-* attribute is whatever the page put there (data-patient="Jane Doe"), so it's masked;
+  // this SDK's own data-forgeops-* controls are not, or unmasking couldn't work.
+  if (name.startsWith("data-") && !name.startsWith("data-forgeops-")) {
+    return true;
+  }
+  // A <meta> tag's content can be the page's own description, or a token (csrf-token).
+  return name === "content" && element.tagName === "META";
+}
+
+/**
+ * An address with only its scheme, host, port and path: no query, no fragment, and no
+ * credentials (up to the last "@" before the path: a password can hold one, a host never does).
+ * Read by hand rather than with a URL parser, the same as strictPrivacy.ts's pageUrl, so an
+ * address a parser would reject is still cut down rather than kept whole. A relative address
+ * keeps its path ("/search?q=jane" is "/search", "#top" is ""). One with a scheme but no "//"
+ * after it (mailto:, tel:, sms:, javascript:) keeps only its scheme, since everything after it is
+ * the person or the code; a data: address is kept whole, as it's the content itself (an inline
+ * image), not a place.
+ *
+ * @internal exported for the tests
+ */
+export function addressWithoutQuery(address: string): string {
+  const text = address.trim();
+  const hierarchical = /^((?:[a-z][a-z0-9+.-]*:)?\/\/)([^/?#]*)([^?#]*)/i.exec(text);
+  if (hierarchical) {
+    const host = (hierarchical[2] ?? "").replace(/^.*@/, "");
+    return `${hierarchical[1] ?? ""}${host}${hierarchical[3] ?? ""}`;
+  }
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text)?.[1];
+  if (scheme !== undefined) {
+    return scheme.toLowerCase() === "data" ? text : `${scheme}:`;
+  }
+  return text.split(/[?#]/)[0] ?? "";
+}
+
+// srcset="a.jpg?sig=1 1x, b.jpg?sig=2 2x": each candidate's address cut down the same way, its
+// size descriptor kept. One holding a data: address is kept whole, since that address's own
+// commas would split it in the wrong places.
+function srcsetWithoutQueries(srcset: string): string {
+  if (/data:/i.test(srcset)) {
+    return srcset;
+  }
+  return srcset
+    .split(",")
+    .map((candidate) => {
+      const [ address = "", ...descriptor ] = candidate.trim().split(/\s+/);
+      return [ addressWithoutQuery(address), ...descriptor ].join(" ");
+    })
+    .join(", ");
+}
+
+// The one place both the initial snapshot and every later attribute mutation go through, so an
+// attribute masked at snapshot time is masked exactly the same way if it changes afterward. For a
+// text field's value it reads the live value property, not just the attribute HTML itself carried
+// at parse time: an attribute reflects a field's default value, not whatever's actually been
+// typed into it since, and it's the latter this needs to hide. null records the attribute as
+// absent.
 function attributeValueFor(element: Element, name: string): string | null {
-  if (name !== "value" || isUnmasked(element)) {
-    return element.getAttribute(name);
+  const raw = element.getAttribute(name);
+  const lowered = name.toLowerCase();
+  // Addresses first, and whether unmasked or not: unmasking is about what's on screen, and a
+  // query string or fragment never is.
+  if (raw !== null && URL_ATTRIBUTES.has(lowered)) {
+    return addressWithoutQuery(raw);
+  }
+  if (raw !== null && SRCSET_ATTRIBUTES.has(lowered)) {
+    return srcsetWithoutQueries(raw);
+  }
+  if (isUnmasked(element)) {
+    return raw;
   }
 
-  if (element instanceof HTMLTextAreaElement) {
-    return element.value ? MASKED_INPUT_VALUE : "";
+  if (lowered === "value") {
+    if (element instanceof HTMLTextAreaElement) {
+      return element.value ? MASKED_INPUT_VALUE : "";
+    }
+    if (element instanceof HTMLInputElement && !NON_TEXT_INPUT_TYPES.has(element.type)) {
+      return element.value ? MASKED_INPUT_VALUE : "";
+    }
+    // A checkbox's, radio's, button's or option's own value attribute: text the page set, so
+    // masked like text.
+    return raw === null ? null : maskText(raw);
   }
-  if (element instanceof HTMLInputElement && !NON_TEXT_INPUT_TYPES.has(element.type)) {
-    return element.value ? MASKED_INPUT_VALUE : "";
+  // Which box is ticked and which option is chosen is input data, the same as a typed value.
+  if (lowered === "checked" && element instanceof HTMLInputElement) {
+    return null;
+  }
+  if (lowered === "selected" && element instanceof HTMLOptionElement) {
+    return null;
+  }
+  if (raw !== null && isTextAttribute(element, lowered)) {
+    return maskText(raw);
   }
 
-  return element.getAttribute(name);
+  return raw;
 }
 
 // Shared by serializeNode above (so a snapshot's own attrs reflect a form field's real current
@@ -467,16 +562,16 @@ function attributeValueFor(element: Element, name: string): string | null {
 // no player-side change needed. Returns null for anything that isn't a form field with a live
 // value worth tracking this way at all.
 //
-// checkbox/radio and <select> deliberately go through neither MASKED_INPUT_VALUE nor maskText:
-// this file's own top comment scopes masking to "every text node's content, and an input/
-// textarea's own typed value" specifically, and a checked state or a chosen option is a
-// different, much lower-cardinality kind of value than free text typed into a field.
+// A checkbox/radio's checked state and a <select>'s chosen option are input data too (a ticked
+// box beside a diagnosis says as much as typing it), so they're masked like a typed value: a box
+// is recorded as unchecked and a chosen option as MASKED_INPUT_VALUE, unless unmasked.
 function liveFormFieldOverride(element: Element): { name: string; value: string | null } | null {
   if (element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")) {
-    return { name: "checked", value: element.checked ? "" : null };
+    return { name: "checked", value: element.checked && isUnmasked(element) ? "" : null };
   }
   if (element instanceof HTMLSelectElement) {
-    return { name: "value", value: element.value || null };
+    const chosen = element.value || null;
+    return { name: "value", value: chosen === null || isUnmasked(element) ? chosen : MASKED_INPUT_VALUE };
   }
   if (element instanceof HTMLTextAreaElement || (element instanceof HTMLInputElement && !NON_TEXT_INPUT_TYPES.has(element.type))) {
     return { name: "value", value: attributeValueFor(element, "value") };

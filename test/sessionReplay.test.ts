@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "../src/client.js";
 import { Configuration } from "../src/configuration.js";
-import { flushSessionReplay, installSessionReplay, SessionReplayPayload, uninstallSessionReplay } from "../src/sessionReplay.js";
+import { addressWithoutQuery, flushSessionReplay, installSessionReplay, SessionReplayPayload, uninstallSessionReplay } from "../src/sessionReplay.js";
 
 function newConfiguration(): Configuration {
   const config = new Configuration();
@@ -43,6 +43,22 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   for (let i = 0; i < 50 && !predicate(); i++) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+interface DecodedRecording {
+  snapshot: unknown;
+  events: Array<{ type: string; name?: string; value?: string | null }>;
+}
+
+// Flushes what's buffered and returns the payload that would have gone out, with its recording
+// decoded.
+async function flushAndDecode(): Promise<{ payload: SessionReplayPayload; recording: DecodedRecording }> {
+  const client = new Client(newConfiguration());
+  const deliverSpy = vi.spyOn(client, "deliverSessionReplay").mockResolvedValue("delivered");
+  flushSessionReplay(newConfiguration(), client);
+  await waitUntil(() => deliverSpy.mock.calls.length > 0);
+  const payload = deliverSpy.mock.calls[0]![0];
+  return { payload, recording: (await decodeRecording(payload)) as DecodedRecording };
 }
 
 afterEach(() => {
@@ -194,8 +210,40 @@ describe("flushSessionReplay", () => {
     expect(JSON.stringify(recording)).not.toContain("already filled in before install");
   });
 
-  it("captures a checkbox's checked state via change, unmasked (not free text the way a value is)", async () => {
-    document.body.innerHTML = '<input type="checkbox">';
+  it("records a checked checkbox as unchecked, in the snapshot and on change, since its state is input data", async () => {
+    document.body.innerHTML = '<input type="checkbox" checked><input type="radio" name="r">';
+    installSessionReplay();
+    const radio = document.querySelectorAll("input")[1]! as HTMLInputElement;
+    radio.checked = true;
+    radio.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const { recording } = await flushAndDecode();
+
+    expect(JSON.stringify(recording.snapshot)).not.toContain('"checked"');
+    const checkedChange = recording.events.find((event) => event.type === "attributes" && event.name === "checked");
+    expect(checkedChange).toBeDefined();
+    expect(checkedChange?.value).toBeNull();
+  });
+
+  it("records a <select>'s chosen option as a masked value, and drops an option's selected attribute", async () => {
+    document.body.innerHTML = '<select><option value="flu">Flu</option><option value="hiv" selected>HIV</option></select>';
+    installSessionReplay();
+    const select = document.querySelector("select")! as HTMLSelectElement;
+    select.value = "flu";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const { recording } = await flushAndDecode();
+
+    const json = JSON.stringify(recording);
+    expect(json).not.toContain("hiv");
+    expect(json).not.toContain("flu");
+    expect(json).not.toContain('"selected"');
+    const valueChange = recording.events.find((event) => event.type === "attributes" && event.name === "value");
+    expect(valueChange?.value).toBe("••••••••");
+  });
+
+  it("captures a checkbox's checked state via change inside an unmasked element", async () => {
+    document.body.innerHTML = '<div data-forgeops-unmask="true"><input type="checkbox"></div>';
     installSessionReplay();
     const checkbox = document.querySelector("input")! as HTMLInputElement;
     checkbox.checked = true;
@@ -213,8 +261,8 @@ describe("flushSessionReplay", () => {
     expect(checkedChange?.value).toBe("");
   });
 
-  it("captures a <select>'s chosen option via change, unmasked", async () => {
-    document.body.innerHTML = '<select><option value="a">A</option><option value="b">B</option></select>';
+  it("captures a <select>'s chosen option via change inside an unmasked element", async () => {
+    document.body.innerHTML = '<select data-forgeops-unmask="true"><option value="a">A</option><option value="b">B</option></select>';
     installSessionReplay();
     const select = document.querySelector("select")! as HTMLSelectElement;
     select.value = "b";
@@ -333,5 +381,123 @@ describe("flushSessionReplay", () => {
     } finally {
       globalThis.CompressionStream = original;
     }
+  });
+});
+
+describe("addresses in a recording", () => {
+  it("keeps only the scheme, host, port and path of an address, without credentials", () => {
+    expect(addressWithoutQuery("https://clinic.example.com/patients/42?email=jane@example.com#x")).toBe("https://clinic.example.com/patients/42");
+    expect(addressWithoutQuery("https://jane:s3cret@clinic.example.com:8443/a/b")).toBe("https://clinic.example.com:8443/a/b");
+    expect(addressWithoutQuery("https://user@name:p@ss@example.com/x")).toBe("https://example.com/x");
+    expect(addressWithoutQuery("//cdn.example.com/app.js?v=3")).toBe("//cdn.example.com/app.js");
+    expect(addressWithoutQuery("/search?q=jane#results")).toBe("/search");
+    expect(addressWithoutQuery("#top")).toBe("");
+    expect(addressWithoutQuery("mailto:jane@example.com?subject=hi")).toBe("mailto:");
+    expect(addressWithoutQuery("tel:+15555550100")).toBe("tel:");
+    expect(addressWithoutQuery("data:image/png;base64,iVBOR")).toBe("data:image/png;base64,iVBOR");
+  });
+
+  it("records the page's address as its origin and path, without query or fragment", async () => {
+    const original = window.location.href;
+    window.history.replaceState(null, "", "/patients/42/chart?email=jane@example.com#x");
+    try {
+      installSessionReplay();
+      const { payload } = await flushAndDecode();
+      expect(payload.page_url).toBe(`${window.location.origin}/patients/42/chart`);
+    } finally {
+      window.history.replaceState(null, "", original);
+    }
+  });
+
+  it("strips the query and fragment from href and src, unmasked or not", async () => {
+    document.body.innerHTML =
+      '<a href="https://example.com/reset?token=abc123#t">reset</a>' +
+      '<img src="/avatars/7.png?sig=xyz" srcset="/a.png?sig=1 1x, /b.png?sig=2 2x">' +
+      '<div data-forgeops-unmask="true"><a href="/search?q=jane">search</a></div>';
+    installSessionReplay();
+
+    const { recording } = await flushAndDecode();
+
+    const json = JSON.stringify(recording);
+    expect(json).toContain('"href":"https://example.com/reset"');
+    expect(json).toContain('"src":"/avatars/7.png"');
+    expect(json).toContain('"srcset":"/a.png 1x, /b.png 2x"');
+    expect(json).toContain('"href":"/search"');
+    for (const leaked of [ "token", "abc123", "sig=", "q=jane" ]) {
+      expect(json).not.toContain(leaked);
+    }
+  });
+
+  it("strips the query from an href set after the snapshot, too", async () => {
+    document.body.innerHTML = "<a>link</a>";
+    installSessionReplay();
+    document.querySelector("a")!.setAttribute("href", "/orders?email=jane@example.com");
+    await Promise.resolve();
+
+    const { recording } = await flushAndDecode();
+
+    const change = recording.events.find((event) => event.type === "attributes" && event.name === "href");
+    expect(change?.value).toBe("/orders");
+  });
+});
+
+describe("text-bearing attributes", () => {
+  it("masks placeholder, title, alt, aria-label, aria-description, aria-placeholder and data-* like text", async () => {
+    document.body.innerHTML =
+      '<input placeholder="jane@example.com" aria-placeholder="Jane Doe">' +
+      '<img alt="Jane Doe x-ray" title="Patient Jane">' +
+      '<button aria-label="Email jane@example.com" aria-description="Chart for Jane">go</button>' +
+      '<div data-patient="Jane Doe" data-forgeops-note="kept"></div>';
+    installSessionReplay();
+
+    const { recording } = await flushAndDecode();
+
+    const json = JSON.stringify(recording);
+    expect(json).not.toContain("Jane");
+    expect(json).not.toContain("jane@example.com");
+    // Same per-character mask as text: "Jane Doe" keeps its space and its length.
+    expect(json).toContain('"data-patient":"•••• •••"');
+    expect(json).toContain('"placeholder":"••••••••••••••••"');
+    expect(json).toContain('"alt":"•••• ••• •••••"');
+    // This SDK's own control attributes stay as they are.
+    expect(json).toContain('"data-forgeops-note":"kept"');
+  });
+
+  it("masks a button's and a checkbox's value attribute like text", async () => {
+    document.body.innerHTML = '<input type="submit" value="Pay Jane"><input type="checkbox" value="diabetes">';
+    installSessionReplay();
+
+    const { recording } = await flushAndDecode();
+
+    const json = JSON.stringify(recording);
+    expect(json).not.toContain("Pay Jane");
+    expect(json).not.toContain("diabetes");
+    expect(json).toContain('"value":"••• ••••"');
+  });
+
+  it("masks a text attribute set after the snapshot, too", async () => {
+    document.body.innerHTML = "<input>";
+    installSessionReplay();
+    document.querySelector("input")!.setAttribute("placeholder", "jane@example.com");
+    await Promise.resolve();
+
+    const { recording } = await flushAndDecode();
+
+    const change = recording.events.find((event) => event.type === "attributes" && event.name === "placeholder");
+    expect(change?.value).toBe("••••••••••••••••");
+  });
+
+  it("shows text attributes as they are on an element, or inside one, marked data-forgeops-unmask", async () => {
+    document.body.innerHTML =
+      '<div data-forgeops-unmask="true" data-section="pricing"><img alt="Team photo" title="Our team"><input placeholder="you@company.com"></div>';
+    installSessionReplay();
+
+    const { recording } = await flushAndDecode();
+
+    const json = JSON.stringify(recording);
+    expect(json).toContain('"data-section":"pricing"');
+    expect(json).toContain('"alt":"Team photo"');
+    expect(json).toContain('"title":"Our team"');
+    expect(json).toContain('"placeholder":"you@company.com"');
   });
 });

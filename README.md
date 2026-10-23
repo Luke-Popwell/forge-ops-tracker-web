@@ -524,10 +524,41 @@ forgeOpsTracker.init({
 Once on, this records a snapshot of the page plus every DOM mutation, click, scroll, and resize
 after it, always in memory, never uploaded on its own. A recording is only ever uploaded the
 moment an error is actually reported, attached to that specific error; a session that never
-errors never uploads a single byte. Every text node and every input/textarea's own typed value is
-masked before it's ever recorded, always, with no way to turn that off globally: a static, genuinely
-safe element can opt out one at a time with `data-forgeops-unmask="true"` on it (or an ancestor of
-it), never a project-wide switch. Requires a ForgeOps plan that includes session replay
+errors never uploads a single byte.
+
+What's masked before it's ever recorded, always, with no way to turn it off globally:
+
+- Every text node: each character that isn't whitespace becomes `•`, so length and layout survive.
+- Every input and textarea's value, typed or filled in, as a fixed `••••••••` whatever its length
+  (password fields included).
+- Checkbox and radio state (every box is recorded as unchecked) and a `<select>`'s chosen option
+  (recorded as `••••••••`, with no option marked `selected`).
+- Text-bearing attributes, masked the same way as text: `placeholder`, `title`, `alt`, `label`,
+  `aria-label`, `aria-description`, `aria-placeholder`, `aria-valuetext`, the `value` attribute of
+  buttons, checkboxes, radios and options, a `<meta>` tag's `content`, and every `data-*` attribute
+  except this SDK's own `data-forgeops-*` ones.
+
+Every address keeps only its scheme, host, port and path, whether unmasked or not: the page's
+address sent with the recording, and every `href`, `src`, `srcset`, `action`, `formaction`,
+`poster` and `cite` in it. The query string, the fragment and any `user:password@` are never
+recorded, so `https://app.example.com/patients/42?email=jane@example.com#notes` is recorded as
+`https://app.example.com/patients/42`. A relative address keeps its path (`/search?q=jane` is
+`/search`), and a `mailto:`, `tel:`, `sms:` or `javascript:` one keeps only its scheme. The path
+itself is kept in full, so an id or name in a path (`/patients/jane-doe`) is recorded.
+
+Recorded as they are: tag names, `id`, `class`, `style`, `name`, `type`, `role` and other
+attributes not listed above, the page's layout, and mouse movement, clicks, scrolling and window
+size. `<script>`, `<style>` and `<noscript>` elements, and comments, aren't recorded at all.
+
+A static, genuinely safe element can opt out one at a time with `data-forgeops-unmask="true"` on
+it, never a project-wide switch. It unmasks everything inside it too: its text, its text-bearing
+attributes, and every form field in it, password fields included. Inside an unmasked element a
+field's `value` attribute is recorded as it is, and checkbox, radio and select state is recorded.
+Some frameworks (React among them) keep a field's `value` attribute in step with what's typed, so
+in those apps what someone types into a field inside an unmasked element can be recorded. Put
+`data-forgeops-unmask` on static content, never around a form that takes personal data.
+
+Requires a ForgeOps plan that includes session replay
 (Enterprise); on a plan that doesn't, recordings are accepted but not recorded, and the response says why.
 
 ## Database errors

@@ -1,6 +1,6 @@
 {
   "name": "@forge-ops/tracker-web",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "ForgeOps error tracking client for browser/frontend apps: captures unhandled exceptions (window.onerror, unhandledrejection, a React error boundary, and a Next.js instrumentation hook), plus explicit capture anywhere else, and delivers them to ForgeOps over HTTP.",
   "type": "module",
   "main": "dist/index.js",
